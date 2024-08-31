@@ -1,0 +1,124 @@
+name: cesium-native
+on: [push, pull_request]
+jobs:
+  QuickChecks:
+    name: "Quick Checks"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - name: Check source formatting
+        run: |
+          npm install
+          npm run format -- --dry-run -Werror
+  Documentation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Doxygen
+        run: |
+          sudo apt install -y doxygen
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Generate Documentation
+        run: |
+          cmake -B build -S .
+          cmake --build build --target cesium-native-docs
+      - name: Publish Documentation Artifact
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReferenceDocumentation
+          path: build/doc/html
+  WindowsBuild:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows-2019, windows-2022]
+        build_type: [Debug, RelWithDebInfo]
+    name: "${{matrix.platform}} / ${{matrix.build_type}}"
+    env:
+      CACHE_KEY: "${{ matrix.platform }}"
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Install ninja
+        uses: seanmiddleditch/gha-setup-ninja@master
+      - name: Install nasm
+        uses: ilammy/setup-nasm@v1
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Setup MSVC for command-line builds
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: sccache
+        uses: hendrikmuhs/ccache-action@v1.2.9
+        with:
+          key: ccache-${{ env.CACHE_KEY}}-${{matrix.build_type}}-1
+          variant: sccache
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
+        with:
+          path: /.ezvcpkg
+          key: vcpkg-${{ env.CACHE_KEY }}-${{ hashFiles('CMakeLists.txt') }}-1
+      - name: Compile ${{matrix.build_type}} Configuration
+        run: |
+          cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=${{matrix.build_type}} -DCMAKE_C_COMPILER_LAUNCHER=C:\\Users\\runneradmin\\.cargo\\bin\\sccache -DCMAKE_CXX_COMPILER_LAUNCHER=C:\\Users\\runneradmin\\.cargo\\bin\\sccache
+          cmake --build build
+      - name: Test ${{matrix.build_type}} Configuration
+        run: |
+          cd build
+          ctest -V
+  PosixBuild:
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [ gcc, clang ]
+        platform: [ ubuntu-latest, ubuntu-20.04, macos-12 ]
+        build_type: [Debug, RelWithDebInfo]
+        exclude:
+          - compiler: clang
+            platform: ubuntu-latest
+          - compiler: gcc
+            platform: macos-12
+          - compiler: gcc
+            platform: ubuntu-20.04
+    name: "${{matrix.platform}} / ${{matrix.compiler}} / ${{matrix.build_type}}"
+    env:
+      CACHE_KEY: "${{ matrix.platform }}-${{matrix.compiler}}"
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Install ninja
+        uses: seanmiddleditch/gha-setup-ninja@master
+      - name: Install nasm
+        uses: ilammy/setup-nasm@v1
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.9
+        with:
+          key: ccache-${{ env.CACHE_KEY}}-${{matrix.build_type}}
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v4
+        with:
+          path: ~/.ezvcpkg
+          key:  vcpkg-${{ env.CACHE_KEY }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            vcpkg-${{ env.CACHE_KEY }}-${{ hashFiles('CMakeLists.txt') }}
+            vcpkg-${{ env.CACHE_KEY }}
+      - name: Set CC and CXX
+        if: ${{ matrix.compiler == 'clang' && matrix.platform != 'macos-12'}}
+        run: |
+          echo "CC=clang-12" >> "$GITHUB_ENV"
+          echo "CXX=clang++-12" >> "$GITHUB_ENV"
+      - name: Compile ${{matrix.build_type}} Configuration
+        run: |
+          cmake -B build -S . -DCMAKE_BUILD_TYPE:STRING=${{matrix.build_type}}
+          cmake --build build --parallel
+      - name: Test ${{matrix.build_type}} Configuration
+        run: |
+          cd build
+          ctest -V
